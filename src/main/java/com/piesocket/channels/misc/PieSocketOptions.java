@@ -17,12 +17,18 @@ public class PieSocketOptions {
     private String version;
     private String webSocketEndpoint;
 
+    private long reconnectionDelay;
+
+    private long pingInterval;
+
     public PieSocketOptions(){
         this.version = "3";
         this.enableLogs = true;
         this.notifySelf = true;
         this.presence = false;
         this.forceAuth = false;
+        this.reconnectionDelay = 5000L;
+        this.pingInterval = 25000L;
     }
 
     public String getWebSocketEndpoint() {
@@ -32,6 +38,23 @@ public class PieSocketOptions {
     public void setWebSocketEndpoint(String webSocketEndpoint) {
         this.webSocketEndpoint = webSocketEndpoint;
     }
+
+    public long getPingInterval() {
+        return pingInterval;
+    }
+
+    public void setPingInterval(long pingInterval) {
+        this.pingInterval = pingInterval;
+    }
+
+    public long getReconnectionDelay() {
+        return reconnectionDelay;
+    }
+
+    public void setReconnectionDelay(long reconnectionDelay) {
+        this.reconnectionDelay = reconnectionDelay;
+    }
+
 
     public String getVersion() {
         return version;

@@ -1,7 +1,6 @@
 package com.piesocket.channels;
 
-import android.util.Log;
-
+import com.piesocket.channels.misc.ConnectionState;
 import com.piesocket.channels.misc.PieSocketEvent;
 import com.piesocket.channels.misc.PieSocketEventListener;
 import com.piesocket.channels.misc.Logger;
@@ -14,6 +13,8 @@ import org.json.JSONObject;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.Timer;
+import java.util.TimerTask;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
 
@@ -32,6 +33,10 @@ public class Channel extends WebSocketListener implements Callback {
     public WebSocket ws;
     public String uuid;
 
+
+    public String connectionState = ConnectionState.IDLE;
+
+    private Timer reconnectTimer = null;
     private HashMap<String, ArrayList<PieSocketEventListener>> listeners;
     private Logger logger;
     private PieSocketOptions options;
@@ -47,6 +52,26 @@ public class Channel extends WebSocketListener implements Callback {
         this.shouldReconnect = false;
 
         this.connect(roomId);
+        this.schedulePing();
+    }
+
+    public void schedulePing(){
+        new Timer().schedule(new TimerTask() {
+            @Override
+            public void run() {
+                ping();
+            }
+        }, this.options.getPingInterval());
+    }
+
+    public void ping(){
+        if(this.connectionState.equals(ConnectionState.CONNECTED)){
+            logger.log("Sending ping");
+            this.send("cmd_ping");
+        }else{
+            logger.log("Ping skipped, not connected");
+        }
+        this.schedulePing();
     }
 
     public Channel(String webSocketURL, boolean enableLogs){
@@ -118,6 +143,7 @@ public class Channel extends WebSocketListener implements Callback {
 
     //TODO: No param required
     public void connect(String roomId){
+        setConnectionState(ConnectionState.CONNECTING);
         logger.log("Connecting to: "+roomId);
 
         try{
@@ -137,22 +163,51 @@ public class Channel extends WebSocketListener implements Callback {
             if(e.getMessage().contains("will fetch from authEndpoint")){
                 logger.log("Defer connection: "+e.getMessage());
             }else{
+                setConnectionState(ConnectionState.DISCONNECTED);
                 throw e;
             }
         }
     }
 
     public  void disconnect(){
+        setConnectionState(ConnectionState.DISCONNECTED);
+
         this.shouldReconnect = false;
         this.ws.close(NORMAL_CLOSURE_STATUS, null);
     }
 
     public  void reconnect(){
-        if(this.shouldReconnect){
-            this.connect(this.id);
+        if(reconnectTimer != null){
+            logger.log("Reconnect is already scheduled");
+            return;
         }
+
+        if(!this.shouldReconnect){
+            return;
+        }
+
+        setConnectionState(ConnectionState.WAITING_TO_RECONNECT);
+
+
+        reconnectTimer = new Timer();
+        reconnectTimer.schedule(new TimerTask() {
+            @Override
+            public void run() {
+                doReconnect();
+            }
+        }, this.options.getReconnectionDelay());
+
     }
 
+    public void doReconnect(){
+        if(this.shouldReconnect && !this.connectionState.equals(ConnectionState.CONNECTED)){
+            logger.log("Reconnecting");
+            this.connect(this.id);
+        }else{
+            logger.log("Reconnecting skipped, already in connected state or closed manually");
+        }
+        reconnectTimer = null;
+    }
 
     public void listen(String eventName, PieSocketEventListener callback){
         ArrayList<PieSocketEventListener> callbacks;
@@ -201,8 +256,10 @@ public class Channel extends WebSocketListener implements Callback {
 
     private void doFireEvents(String listenerKey, PieSocketEvent event){
         ArrayList<PieSocketEventListener> callbacks = this.listeners.get(listenerKey);
-        for(int i=0; i < callbacks.size(); i++){
-            callbacks.get(i).handleEvent(event);
+        if(callbacks != null){
+            for(int i=0; i < callbacks.size(); i++){
+                callbacks.get(i).handleEvent(event);
+            }
         }
     }
 
@@ -212,6 +269,7 @@ public class Channel extends WebSocketListener implements Callback {
         event.setEvent("system:connected");
         this.fireEvent(event);
 
+       setConnectionState(ConnectionState.CONNECTED);
         this.shouldReconnect = true;
     }
 
@@ -270,6 +328,8 @@ public class Channel extends WebSocketListener implements Callback {
         event.setData(reason);
         this.fireEvent(event);
 
+        setConnectionState(ConnectionState.DISCONNECTED);
+
         this.reconnect();
     }
 
@@ -283,9 +343,19 @@ public class Channel extends WebSocketListener implements Callback {
         event.setData(t.getMessage());
         this.fireEvent(event);
 
+        setConnectionState(ConnectionState.DISCONNECTED);
+
         this.reconnect();
     }
 
+    public void setConnectionState(String state){
+        logger.log("Socket state change: "+state);
+        this.connectionState = state;
+
+        PieSocketEvent payload = new PieSocketEvent("system:statechange");
+        payload.setData(state);
+        doFireEvents("system:statechange", payload);
+    }
 
 
     public JSONObject getMemberByUUID(String uuid){
@@ -333,6 +403,7 @@ public class Channel extends WebSocketListener implements Callback {
 
     @Override
     public void onFailure(Call call, IOException e) {
+        setConnectionState(ConnectionState.DISCONNECTED);
         throw  new PieSocketException("Auth Token Server Error"+ e.getMessage());
     }
 
@@ -350,9 +421,12 @@ public class Channel extends WebSocketListener implements Callback {
                 this.logger.log("Auth token fetched, resuming connection");
                 this.options.setJwt(jwt);
                 this.connect(this.id);
+            }else{
+                setConnectionState(ConnectionState.DISCONNECTED);
             }
 
         }catch (Exception e){
+            setConnectionState(ConnectionState.DISCONNECTED);
             throw  new PieSocketException("Auth Token Response Parsing Error: "+ e.getMessage());
         }
     }
